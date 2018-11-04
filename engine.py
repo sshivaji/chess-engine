@@ -5,14 +5,69 @@ import chess
 from chess import polyglot
 import tables
 import os
+import glob
+
+# DGT
+
+from pydgt import DGTBoard
+from pydgt import FEN
+from pydgt import CLOCK_BUTTON_PRESSED
+from pydgt import CLOCK_LEVER
+from pydgt import CLOCK_ACK
+from pydgt import scan as dgt_port_scan
+from threading import Thread, RLock
+
+
+## Some code adapted from https://github.com/alexsyrom/chess-engine
 
 __location__ = os.path.realpath(
     os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 logfile = open(os.path.join(__location__, 'input.log'), 'w')
 
-ENGINE_NAME = 'simple UCI chess engine'
-AUTHOR_NAME = 'Alexey Syromyatnikov'
+ENGINE_NAME = 'DGT UCI chess engine'
+AUTHOR_NAME = 'Shivkumar Shivaji'
+ENGINE_PLAY = "engine_play"
+
+def scan():
+   # scan for available ports. return a list of device names.
+    return glob.glob('/dev/cu.usb*') + glob.glob('/dev/tty.DGT*') + glob.glob('/dev/ttyACM*')
+
+
+class KThread(Thread):
+    """A subclass of threading.Thread, with a kill()
+  method."""
+    def __init__(self, *args, **keywords):
+        Thread.__init__(self, *args, **keywords)
+        self.killed = False
+
+    def start(self):
+        """Start the thread."""
+        self.__run_backup = self.run
+        self.run = self.__run      # Force the Thread to install our trace.
+        Thread.start(self)
+
+    def __run(self):
+        """Hacked run function, which installs the
+    trace."""
+        sys.settrace(self.globaltrace)
+        self.__run_backup()
+        self.run = self.__run_backup
+
+    def globaltrace(self, frame, why, arg):
+        if why == 'call':
+            return self.localtrace
+        else:
+            return None
+
+    def localtrace(self, frame, why, arg):
+        if self.killed:
+            if why == 'line':
+                raise SystemExit()
+        return self.localtrace
+
+    def kill(self):
+        self.killed = True
 
 
 class Analyzer(threading.Thread):
@@ -249,8 +304,130 @@ class EngineShell(cmd.Cmd):
     go_parameter_list = ['infinite', 'searchmoves', 'depth', 'nodes']
 
     def __init__(self):
-        super(EngineShell, self).__init__()
+        # super(EngineShell, self).__init__()
+        # super(self).__init__()
+        cmd.Cmd.__init__(self)
         self.postinitialized = False
+        self.dgt_fen = None
+        self.computer_move_FEN_reached = False
+        self.mode = ENGINE_PLAY
+        self.bestmove = None
+
+    def discover_usb_devices(self):
+        for port in scan():
+            # if port.startswith("/dev/tty.DGT"):
+            if port.startswith("/dev/cu.usbmodem"):
+                device = port
+                print("info string device : {0}".format(device))
+                return device
+        # cu.DGT_BT_21265 - SPP
+
+    def discover_bluetooth_devices(self, duration=15):
+        import bluetooth
+        print("info string importing bluetooth")
+
+        nearby_devices = bluetooth.discover_devices(lookup_names=True, duration=duration)
+        print("info string found %d devices" % len(nearby_devices))
+
+        for addr, name in nearby_devices:
+            print("info string   %s - %s" % (addr, name))
+            # return nearby_devices
+            if name.startswith("DGT_"):
+                self.dgt_device = bluetooth.BluetoothSocket(bluetooth.RFCOMM)
+                self.dgt_device.connect(addr, 1)
+                print("info string Finished")
+
+    def try_dgt_legal_moves(self, from_fen, to_fen):
+        to_fen_first_tok = to_fen.split()[0]
+        temp_board = chess.Board(fen=from_fen)
+
+        for m in temp_board.legal_moves:
+            temp_board2 = chess.Board(fen=from_fen)
+            # print("move: {}".format(m))
+            temp_board2.push(m)
+            cur_fen = temp_board2.fen()
+            cur_fen_first_tok = str(cur_fen).split()[0]
+            #            print "cur_token:{0}".format(cur_fen_first_tok)
+            #            print "to_token:{0}".format(to_fen_first_tok)
+            if cur_fen_first_tok == to_fen_first_tok:
+                self.dgt_fen = to_fen
+                # print("info string Move received is : {}".format(m))
+                self.bestmove = str(m)
+                self.output_bestmove()
+                # self.process_move(move=str(m))
+                return True
+
+    def dgt_probe(self, attr, *args):
+        if attr.type == FEN:
+            new_dgt_fen = attr.message
+            #            print "length of new dgt fen: {0}".format(len(new_dgt_fen))
+            #            print "new_dgt_fen just obtained: {0}".format(new_dgt_fen)
+            if self.dgt_fen and new_dgt_fen:
+                if new_dgt_fen != self.dgt_fen:
+                    if self.mode == ENGINE_PLAY:
+                        self.computer_move_FEN_reached = False
+
+                    if not self.try_dgt_legal_moves(self.analyzer.board.fen(), new_dgt_fen):
+                        dgt_fen_start = new_dgt_fen.split()[0]
+                        curr_fen_start = self.analyzer.board.fen().split()[0]
+                        if curr_fen_start == dgt_fen_start and self.mode == ENGINE_PLAY:
+                            self.computer_move_FEN_reached = True
+
+                    #     if self.chessboard.parent:
+                    #         prev_fen_start = self.chessboard.parent.board().fen().split()[0]
+                    #         if dgt_fen_start == prev_fen_start:
+                    #             self.back('dgt')
+                    # if self.engine_mode != ENGINE_PLAY and self.engine_mode != ENGINE_ANALYSIS:
+                    #     if self.lcd:
+                    #         self.write_lcd_prev_move()
+
+            elif new_dgt_fen:
+                self.dgt_fen = new_dgt_fen
+        # if attr.type == CLOCK_BUTTON_PRESSED:
+        #     print("Clock button {0} pressed".format(attr.message))
+        #     e = ButtonEvent(attr.message)
+        #     self.dgt_button_event(e)
+        # if attr.type == CLOCK_ACK:
+        #     self.clock_ack_queue.put('ack')
+        #     print
+        #     "Clock ACK Received"
+        # if attr.type == CLOCK_LEVER:
+        #     if self.clock_lever != attr.message:
+        #         if self.clock_lever:
+        #             # not first clock level read
+        #             # print "clock level changed to {0}!".format(attr.message)
+        #             e = ButtonEvent(5)
+        #             self.dgt_button_event(e)
+        #
+        #         self.clock_lever = attr.message
+
+    def poll_dgt(self):
+        self.dgt_thread = KThread(target=self.dgtnix.poll)
+        self.dgt_thread.daemon = True
+        self.dgt_thread.start()
+
+    def dgt_board_connect(self, device):
+        self.device=""
+        self.dgtnix = DGTBoard(device)
+        # self.dgtnix.subscribe(self.dgt_probe)
+        # poll_dgt()
+        self.dgtnix.subscribe(self.dgt_probe)
+        self.poll_dgt()
+        # sleep(1)
+        self.dgtnix.test_for_dgt_clock()
+        # p
+        # if self.dgtnix.dgt_clock:
+        #     print ("Found DGT Clock")
+        #     self.dgt_clock_ack_thread()
+        # else:
+        #     print ("No DGT Clock found")
+        self.dgtnix.get_board()
+
+        if not self.dgtnix:
+            print ("info strong Unable to connect to the device on {0}".format(self.device))
+        else:
+            print("info string The board was found")
+            self.dgt_connected = True
 
     def postinit(self):
         opening_book = self.opening_book + self.opening_book_extension
@@ -260,17 +437,24 @@ class EngineShell(cmd.Cmd):
             self.output_info,
             os.path.join(__location__, opening_book))
         self.analyzer.start()
+        device = self.discover_usb_devices()
+        if device:
+            self.dgt_board_connect(device)
+        # self.discover_bluetooth_devices()
         self.postinitialized = True
 
     def do_uci(self, arg):
-        print('id name', ENGINE_NAME)
-        print('id author', AUTHOR_NAME)
-        print('option name OpeningBook type combo', end=' ')
-        print('default', self.opening_book, end=' ')
-        for book in self.opening_book_list:
-            print('var', book, end=' ')
-        print()
+        print('id name {}'.format(ENGINE_NAME) )
+        print('id author {}'.format(AUTHOR_NAME))
+
+        # for book in self.opening_book_list:
+        #     print('var {}'.format(book))
+
+        print('option name OpeningBook type combo default {} {}'.format(self.opening_book, ' var '.join(self.opening_book_list)))
+
+        # print()
         print('uciok')
+        self.postinit()
 
     def do_debug(self, arg):
         arg = arg.split()
@@ -330,23 +514,25 @@ class EngineShell(cmd.Cmd):
                 self.analyzer.board.push_uci(move)
 
     def do_go(self, arg):
-        arg = arg.split()
-        for parameter in self.go_parameter_list:
-            try:
-                index = arg.index(parameter)
-            except:
-                pass
-            else:
-                getattr(self, 'go_' + arg[index])(arg[index + 1:])
-        try:
-            index = arg.index('movetime')
-            time = float(arg[index + 1]) / 1000
-        except:
-            pass
-        else:
-            self.stop_timer = threading.Timer(time, self.do_stop)
-            self.stop_timer.start()
-        self.analyzer.is_working.set()
+        print("info string go called")
+        # self.output_bestmove()
+        # arg = arg.split()
+        # for parameter in self.go_parameter_list:
+        #     try:
+        #         index = arg.index(parameter)
+        #     except:
+        #         pass
+        #     else:
+        #         getattr(self, 'go_' + arg[index])(arg[index + 1:])
+        # try:
+        #     index = arg.index('movetime')
+        #     time = float(arg[index + 1]) / 1000
+        # except:
+        #     pass
+        # else:
+        #     self.stop_timer = threading.Timer(time, self.do_stop)
+        #     self.stop_timer.start()
+        # self.analyzer.is_working.set()
 
     def do_stop(self, arg=None):
         if hasattr(self, 'stop_timer'):
@@ -364,12 +550,15 @@ class EngineShell(cmd.Cmd):
         sys.exit()
 
     def output_bestmove(self):
-        print('bestmove', self.analyzer.bestmove.uci(),
-              file=self.stdout, flush=True)
+        # print('bestmove: {}'.format(self.analyzer.bestmove.uci()))
+        print('bestmove {}'.format(self.bestmove))
+
+
+              # file=self.stdout, flush=True)
 
     def output_info(self, info_string):
-        print('info', info_string,
-              file=self.stdout, flush=True)
+        print('info {}'.format(info_string))
+              # file=self.stdout, flush=True)
 
     def go_infinite(self, arg):
         self.analyzer.infinite = True
@@ -406,7 +595,7 @@ class EngineShell(cmd.Cmd):
         pass
 
     def precmd(self, line):
-        print(line, file=logfile, flush=True)
+        print(line)
         return line
 
     def postcmd(self, stop, line):
@@ -415,5 +604,5 @@ class EngineShell(cmd.Cmd):
 
 
 if __name__ == '__main__':
-    print('new start', file=logfile, flush=True)
+    # print('new start')
     EngineShell().cmdloop()
