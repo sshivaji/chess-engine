@@ -6,6 +6,7 @@ from chess import polyglot
 import tables
 import os
 import glob
+import platform
 
 # DGT
 
@@ -24,6 +25,20 @@ __location__ = os.path.realpath(
     os.path.join(os.getcwd(), os.path.dirname(__file__)))
 
 logfile = open(os.path.join(__location__, 'input.log'), 'w')
+
+LINUX   = "Linux"
+MAC     = "Darwin"
+WINDOWS = "Windows"
+
+SPOKEN_PIECE_SOUNDS = {
+    "B": " Bishop ",
+    "N": " Knight ",
+    "R": " Rook ",
+    "Q": " Queen ",
+    "K": " King ",
+    "O-O": " Castles ",
+    "++": " Double Check ",
+}
 
 ENGINE_NAME = 'DGT UCI chess engine'
 AUTHOR_NAME = 'Shivkumar Shivaji'
@@ -303,6 +318,8 @@ class EngineShell(cmd.Cmd):
 
     go_parameter_list = ['infinite', 'searchmoves', 'depth', 'nodes']
 
+
+
     def __init__(self):
         # super(EngineShell, self).__init__()
         # super(self).__init__()
@@ -312,6 +329,11 @@ class EngineShell(cmd.Cmd):
         self.computer_move_FEN_reached = False
         self.mode = ENGINE_PLAY
         self.bestmove = None
+        self.moves = []
+
+    @staticmethod
+    def get_system():
+        return platform.system()
 
     def discover_usb_devices(self):
         for port in scan():
@@ -337,6 +359,30 @@ class EngineShell(cmd.Cmd):
                 self.dgt_device.connect(addr, 1)
                 print("info string Finished")
 
+    def speak_move(self, san, immediate=True):
+        if self.get_system() == MAC:
+            # print "best_move:{0}".format(best_move)
+            # print sf.position()
+            # try:
+            #     san = self.get_san([best_move])[0]
+            # except IndexError:
+            #     return
+            # print san
+            spoken_san = san
+            spoken_san = spoken_san.replace('O-O-O', ' castles long ')
+            spoken_san = spoken_san.replace('+', ' check ')
+
+            for k, v in SPOKEN_PIECE_SOUNDS.iteritems():
+                spoken_san = spoken_san.replace(k, v)
+            spoken_san = spoken_san.replace('x', ' captures ')
+            spoken_san = spoken_san.replace('=', ' promotes to ')
+            # print spoken_san
+            if immediate:
+                os.system("say " + spoken_san)
+            # else:
+            #     if spoken_san not in self.speak_move_queue:
+            #         self.speak_move_queue.append(spoken_san)
+
     def try_dgt_legal_moves(self, from_fen, to_fen):
         to_fen_first_tok = to_fen.split()[0]
         temp_board = chess.Board(fen=from_fen)
@@ -353,6 +399,8 @@ class EngineShell(cmd.Cmd):
                 self.dgt_fen = to_fen
                 # print("info string Move received is : {}".format(m))
                 self.bestmove = str(m)
+                san = temp_board.san(m)
+                self.speak_move(san)
                 self.output_bestmove()
                 # self.process_move(move=str(m))
                 return True
@@ -454,7 +502,6 @@ class EngineShell(cmd.Cmd):
 
         # print()
         print('uciok')
-        self.postinit()
 
     def do_debug(self, arg):
         arg = arg.split()
@@ -511,7 +558,14 @@ class EngineShell(cmd.Cmd):
             self.analyzer.board.reset()
         if arg and arg[0] == 'moves':
             for move in arg[1:]:
+                san = self.analyzer.board.san(chess.Move.from_uci(move))
+                self.moves.append(san)
+
+                # self.speak_move(san)
                 self.analyzer.board.push_uci(move)
+                # announce last move
+            print("info string last san {}".format(self.moves[-1]))
+            self.speak_move(self.moves[-1])
 
     def do_go(self, arg):
         print("info string go called")
