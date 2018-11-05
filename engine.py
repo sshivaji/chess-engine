@@ -42,7 +42,8 @@ SPOKEN_PIECE_SOUNDS = {
 
 ENGINE_NAME = 'DGT UCI chess engine'
 AUTHOR_NAME = 'Shivkumar Shivaji'
-ENGINE_PLAY = "engine_play"
+ENGINE_PLAY = 'engine_play'
+START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
 
 def scan():
    # scan for available ports. return a list of device names.
@@ -359,6 +360,11 @@ class EngineShell(cmd.Cmd):
                 self.dgt_device.connect(addr, 1)
                 print("info string Finished")
 
+    def speak_command(self, command, immediate=True):
+        if self.get_system() == MAC:
+            if immediate:
+                os.system("say " + command)
+
     def speak_move(self, san, immediate=True):
         if self.get_system() == MAC:
             # print "best_move:{0}".format(best_move)
@@ -536,7 +542,9 @@ class EngineShell(cmd.Cmd):
             pass
 
     def do_ucinewgame(self, arg):
-        pass
+        print("info string newgame called")
+        self.speak_command("new game started")
+        self.dgt_fen = START_FEN
 
     def do_position(self, arg):
         arg = arg.split()
