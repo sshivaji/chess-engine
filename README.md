@@ -1,2 +1,2 @@
-# chess-engine
-A simple UCI chess engine written in Python. 
+# dgt-uci-engine
+This project enables a DGT board to be a UCI engine. 
